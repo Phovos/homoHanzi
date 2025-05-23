@@ -2,6 +2,7 @@ import pathlib
 import json
 import yaml
 import re
+import csv
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Set, Optional, Union, Any
@@ -486,7 +487,7 @@ anki_fields = f"{{character.character}}\\t{{character.pinyin}}\\t{{', '.join(cha
                 continue
         
         return results
-    
+
     def generate_anki_deck(self, output_path: pathlib.Path, include_radicals: bool = True) -> bool:
         """Generate an Anki-compatible TSV file for import"""
         try:
@@ -711,3 +712,86 @@ anki_fields = f"{{character.character}}\\t{{character.pinyin}}\\t{{', '.join(cha
             print(f"Error importing from CSV: {e}")
             return 0
     
+import argparse
+import json
+from pathlib import Path
+
+def save_json_data(data, output_path):
+    """Save list of row dictionaries to a JSON file"""
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(output, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"Saved {len(data)} rows to {output}")
+def init_db(db_path: str):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pinyin (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_key TEXT,
+        vowel_root TEXT,
+        initial TEXT,
+        final TEXT,
+        actor TEXT
+    )
+    """)
+    conn.commit()
+    return conn
+
+def load_pinyin_chart(csv_path: str):
+    """
+    Load the pinyin chart CSV without external libraries.
+    Handles missing values and maps columns correctly.
+    """
+    pinyin_data = []
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        headers = next(reader)  # First row is header
+
+        for row_num, row in enumerate(reader):
+            if not row:
+                continue  # Skip empty lines
+
+            row_data = {}
+            for col_num, value in enumerate(row):
+                col_name = headers[col_num] if col_num < len(headers) else f"col_{col_num}"
+                row_data[col_name] = value.strip() if value.strip() else None
+
+            pinyin_data.append(row_data)
+
+    return pinyin_data
+
+def insert_pinyin_row(conn, row_data):
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO pinyin (group_key, vowel_root, initial, final, actor)
+    VALUES (?, ?, ?, ?, ?)
+    """, (
+        row_data.get("memory_palace_groups"),
+        row_data.get("∅"),
+        row_data.get("b"),
+        row_data.get("p"),
+        row_data.get("AEOIU")  # Assuming this column exists
+    ))
+    conn.commit()
+
+def main():
+    parser = argparse.ArgumentParser(description="Chinese Learning App CLI")
+    parser.add_argument("--import-csv", help="Path to CSV file to import")
+    parser.add_argument("--json-path", default="data/output.json", help="JSON output path")
+
+    args = parser.parse_args()
+
+    if args.import_csv:
+        print(f"Loading CSV from {args.import_csv}...")
+        data = load_pinyin_chart(args.import_csv)
+        print(f"Loaded {len(data)} rows.")
+
+        print("Saving to JSON...")
+        save_json_data(data, args.json_path)
+
+
+if __name__ == "__main__":
+    main()
