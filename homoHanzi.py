@@ -4,6 +4,9 @@ import yaml
 import re
 import csv
 import os
+import argparse
+import json
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Set, Optional, Union, Any
 from enum import Enum
@@ -712,9 +715,6 @@ anki_fields = f"{{character.character}}\\t{{character.pinyin}}\\t{{', '.join(cha
             print(f"Error importing from CSV: {e}")
             return 0
     
-import argparse
-import json
-from pathlib import Path
 
 def save_json_data(data, output_path):
     """Save list of row dictionaries to a JSON file"""
@@ -724,21 +724,6 @@ def save_json_data(data, output_path):
     with open(output, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"Saved {len(data)} rows to {output}")
-def init_db(db_path: str):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS pinyin (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_key TEXT,
-        vowel_root TEXT,
-        initial TEXT,
-        final TEXT,
-        actor TEXT
-    )
-    """)
-    conn.commit()
-    return conn
 
 def load_pinyin_chart(csv_path: str):
     """
@@ -763,6 +748,39 @@ def load_pinyin_chart(csv_path: str):
 
     return pinyin_data
 
+def import_from_csv(self, csv_path: pathlib.Path) -> int:
+    try:
+        import csv
+        count = 0
+        with open(csv_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Skip empty rows or separator rows
+                if not row.get("final"):
+                    continue
+
+                # Extract data
+                mp_group = row.get("memory_palace_group")
+                tone_group = row.get("tone_group")
+                final = row.get("final")
+
+                # You can now map this data into your system
+                print(f"Importing: {mp_group}, {tone_group}, {final}")
+
+                # Example: Save to internal storage or link to Obsidian notes
+                self._save_pinyin_entry({
+                    "memory_palace_group": mp_group,
+                    "tone_group": tone_group,
+                    "final": final,
+                    "syllables": {k: v for k, v in row.items() if k not in ["memory_palace_group", "tone_group", "final"]}
+                })
+
+                count += 1
+            return count
+    except Exception as e:
+        print(f"Error importing from CSV: {e}")
+        return 0
+
 def insert_pinyin_row(conn, row_data):
     cursor = conn.cursor()
     cursor.execute("""
@@ -777,21 +795,100 @@ def insert_pinyin_row(conn, row_data):
     ))
     conn.commit()
 
+def _save_pinyin_entry(self, entry):
+    """Save pinyin entry to JSON or use in memory"""
+    pinyin_dir = self.root_dir / "pinyin"
+    pinyin_dir.mkdir(parents=True, exist_ok=True)
+
+    file_path = pinyin_dir / f"{entry['final']}.json"
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(entry, f, ensure_ascii=False, indent=2)
+
 def main():
-    parser = argparse.ArgumentParser(description="Chinese Learning App CLI")
-    parser.add_argument("--import-csv", help="Path to CSV file to import")
-    parser.add_argument("--json-path", default="data/output.json", help="JSON output path")
+    import argparse
+    import pathlib
+
+    # Define paths
+    root_dir = pathlib.Path("data")
+    vscode_dir = pathlib.Path("vscode")
+    obsidian_dir = pathlib.Path("obsidian")
+    output_dir = pathlib.Path("output")
+
+    # Initialize the system
+    system = ChineseCharacterSystem(
+        root_dir=root_dir,
+        vscode_dir=vscode_dir,
+        obsidian_dir=obsidian_dir
+    )
+
+    # Set up CLI argument parsing
+    parser = argparse.ArgumentParser(description="Chinese Character Learning System")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Import command
+    import_parser = subparsers.add_parser("import", help="Import characters/radicals from CSV")
+    import_parser.add_argument("--csv-path", type=str, default="data/pinyin_chart.csv",
+                               help="Path to input CSV file")
+
+    # Generate Anki deck command
+    anki_parser = subparsers.add_parser("anki", help="Generate Anki-compatible TSV")
+    anki_parser.add_argument("--output-path", type=str, default="output/anki_deck.tsv",
+                             help="Path to save the Anki TSV file")
+
+    # Generate practice sheets command
+    practice_parser = subparsers.add_parser("practice", help="Generate character practice sheets")
+    practice_parser.add_argument("--output-dir", type=str, default="output/practice",
+                                 help="Directory to save practice sheets")
+
+    # Stats command
+    stats_parser = subparsers.add_parser("stats", help="Show learning statistics")
 
     args = parser.parse_args()
 
-    if args.import_csv:
-        print(f"Loading CSV from {args.import_csv}...")
-        data = load_pinyin_chart(args.import_csv)
-        print(f"Loaded {len(data)} rows.")
+    # Handle commands
+    if args.command == "import":
+        csv_path = pathlib.Path(args.csv_path)
+        if not csv_path.exists():
+            print(f"Error: CSV file {csv_path} does not exist.")
+            return
 
-        print("Saving to JSON...")
-        save_json_data(data, args.json_path)
+        count = system.import_from_csv(csv_path)
+        print(f"Successfully imported {count} entries.")
 
+    elif args.command == "anki":
+        output_path = pathlib.Path(args.output_path)
+        success = system.generate_anki_deck(output_path)
+        if success:
+            print(f"Anki deck generated at {output_path}")
+        else:
+            print("Failed to generate Anki deck.")
+
+    elif args.command == "practice":
+        practice_output_dir = pathlib.Path(args.output_dir)
+        success = system.generate_stroke_order_practice(practice_output_dir)
+        if success:
+            print(f"Practice sheets generated in {practice_output_dir}")
+        else:
+            print("Failed to generate practice sheets.")
+
+    elif args.command == "stats":
+        stats = system.generate_stats()
+        print("\n=== Learning Statistics ===\n")
+        print(f"Total Characters: {stats['total_characters']}")
+        print(f"Total Radicals: {stats['total_radicals']}")
+
+        print("\nCharacters by HSK Level:")
+        for level, count in sorted(stats["characters_by_hsk_level"].items()):
+            if level == 0:
+                print(f"  Unknown: {count}")
+            else:
+                print(f"  HSK {level}: {count}")
+
+        print("\nMost Common Radicals:")
+        for item in stats["most_common_radicals"]:
+            print(f"  {item['radical']}: {item['count']} characters")
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
+# python3 homoHanzi.py --import-csv data/pinyin_chart.csv --generate-anki --generate-practice --print-stats
+# python3 homoHanzi.py import --csv-path data/pinyin_chart.csv
